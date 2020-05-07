@@ -25,6 +25,17 @@ from models import *
 
 #os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
+
+def interpolate_points(p1, p2, n_steps=10):
+	# interpolate ratios between the points
+    ratios = np.linspace(0, 1, num=n_steps)
+    vectors = list()
+    for ratio in ratios:
+        v = (1.0 - ratio) * p1 + ratio * p2
+        vectors.append(v)
+    return vectors
+
+
 def run():
     parser = argparse.ArgumentParser(description='fashion GAN')
     parser.add_argument('--log-freq', type=int, default=500)
@@ -36,12 +47,27 @@ def run():
     parser.add_argument('--n-epochs', type=int, default=25)
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.0002)
+    parser.add_argument('--wd', type=float, default=1e-7)
 
     args = parser.parse_args()
-
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    wandb.init(project="fashion-mnist-gan")
+
+
+    hyper_parameter_defaults = dict(
+        nz=100,
+        batch_size=8,
+        learning_rate=0.0002,
+        n_epochs=5,
+        weight_decay=1e-6,
+        beta1=0.5,
+        beta2=0.999
+    )
+
+
+
+    wandb.init(project="fashion-mnist-gan", config=hyper_parameter_defaults)
+    config = wandb.config
 
     transform = transforms.Compose([
         transforms.Scale(64),
@@ -54,29 +80,33 @@ def run():
                                   download=True)
 
     train_loader = torch_data.DataLoader(train_set,
-                                   batch_size=args.batch,
+                                   batch_size=config.batch_size,
                                    shuffle=True,
-                                   num_workers=args.workers)
-    print(torch.cuda.device_count())
+                                   num_workers=2)
     device = torch.device('cuda:1')# if torch.cuda.is_available() else torch.device('cpu')
-    print(device)
-    netG = Generator(device, nc=1, nz=args.nz, ngf=64)
+    netG = Generator(device, nc=1, nz=config.nz, ngf=64)
     netD = Discriminator(device, nc=1, ndf=64)
     netG.to(device)
     netD.to(device)
 
     criterion = nn.BCELoss()
-    fixed_noise = torch.randn(64, args.nz, 1, 1)
+    fixed_noise = torch.randn(64, config.nz, 1, 1)
     real_label = 1
     fake_label = 0
     iters = 0
-    optimizerD = optim.Adam(netD.parameters(), lr=args.lr, betas=(0.5, 0.999))
-    optimizerG = optim.Adam(netG.parameters(), lr=args.lr, betas=(0.5, 0.999))
+    optimizerD = optim.Adam(netD.parameters(),
+                            lr=config.learning_rate,
+                            betas=(config.beta1, config.beta2),
+                            weight_decay=config.weight_decay)
+    optimizerG = optim.Adam(netG.parameters(),
+                            lr=config.learning_rate,
+                            betas=(config.beta1, config.beta2),
+                            weight_decay=config.weight_decay)
     img_list = []
     G_losses = []
     D_losses = []
 
-    for epoch in range(args.n_epochs):
+    for epoch in range(config.n_epochs):
         # For each batch in the dataloader
         for i, data in enumerate(train_loader, 0):
 
@@ -99,7 +129,7 @@ def run():
 
             ## Train with all-fake batch
             # Generate batch of latent vectors
-            noise = torch.randn(b_size, args.nz, 1, 1, device=device)
+            noise = torch.randn(b_size, config.nz, 1, 1, device=device)
             # Generate fake image batch with G
             fake = netG(noise)
             label.fill_(fake_label)
@@ -133,8 +163,14 @@ def run():
             # Output training stats
             if i % 50 == 0:
                 print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
-                      % (epoch, args.n_epochs, i, len(train_loader),
+                      % (epoch, config.n_epochs, i, len(train_loader),
                          errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+                wandb.log({'Loss_D': errD.item(),
+                           'Loss_G': errG.item(),
+                           'D(x)': D_x,
+                           'pre update D(G(z))': D_G_z1,
+                           'post update D(G(z))': D_G_z2,
+                           'iter': iters})
 
             # Save Losses for plotting later
             G_losses.append(errG.item())
@@ -142,12 +178,25 @@ def run():
 
             # Check how the generator is doing by saving G's output on fixed_noise
             if (iters % 500 == 0) or \
-                    ((epoch == args.n_epochs - 1) and (i == len(train_loader) - 1)):
+                    ((epoch == config.n_epochs - 1) and (i == len(train_loader) - 1)):
                 with torch.no_grad():
                     fake = netG(fixed_noise).detach().cpu()
                 img_list.append(vutils.make_grid(fake,
                                                  padding=2,
                                                  normalize=True))
+                wandb.log({"Generator Output": [wandb.Image(img_list[-1])]})
+                max_pts = min(fixed_noise.shape[0]/2, 1)
+                p1s = fixed_noise[:max_pts, :, :, :]
+                p2s = fixed_noise[max_pts:2*max_pts, :, :, :]
+
+                points_list = interpolate_points(p1s, p2s, 10)
+                ims = []
+                for point in points_list:
+                    im = netG(point).detach().cpu()
+                    im =transforms.ToPILImage()(im)
+                    ims.append(im)
+                wandb.log({"Latent Space Traversal": [wandb.Image(im) for im in ims],
+                           'iter': iters})
 
             iters += 1
 
