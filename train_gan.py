@@ -14,16 +14,16 @@ import torchvision.transforms as transforms
 import torchvision
 import torchvision.utils as vutils
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from IPython.display import HTML
+#import matplotlib.pyplot as plt
+#import matplotlib.animation as animation
+#from IPython.display import HTML
 from PIL import Image
 import wandb
 import os
 
 from models import *
 
-os.environ["CUDA_VISIBLE_DEVICES"] = 1
+#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def run():
     parser = argparse.ArgumentParser(description='fashion GAN')
@@ -34,6 +34,8 @@ def run():
     parser.add_argument('--seed', type=int, default=999)
     parser.add_argument('--batch', type=int, default=8)
     parser.add_argument('--n-epochs', type=int, default=25)
+    parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument('--lr', type=float, default=0.0002)
 
     args = parser.parse_args()
 
@@ -55,10 +57,9 @@ def run():
                                    batch_size=args.batch,
                                    shuffle=True,
                                    num_workers=args.workers)
-
-    device = torch.cuda(f'device:{args.device}') \
-        if torch.cuda.is_available() else torch.device('cpu')
-
+    print(torch.cuda.device_count())
+    device = torch.device('cuda:1')# if torch.cuda.is_available() else torch.device('cpu')
+    print(device)
     netG = Generator(device, nc=1, nz=args.nz, ngf=64)
     netD = Discriminator(device, nc=1, ndf=64)
     netG.to(device)
@@ -132,7 +133,7 @@ def run():
             # Output training stats
             if i % 50 == 0:
                 print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
-                      % (epoch, args.num_epochs, i, len(train_loader),
+                      % (epoch, args.n_epochs, i, len(train_loader),
                          errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
 
             # Save Losses for plotting later
@@ -141,7 +142,7 @@ def run():
 
             # Check how the generator is doing by saving G's output on fixed_noise
             if (iters % 500 == 0) or \
-                    ((epoch == args.num_epochs - 1) and (i == len(train_loader) - 1)):
+                    ((epoch == args.n_epochs - 1) and (i == len(train_loader) - 1)):
                 with torch.no_grad():
                     fake = netG(fixed_noise).detach().cpu()
                 img_list.append(vutils.make_grid(fake,
